@@ -32,19 +32,21 @@ use super::{svg::SvgBuilder, Builder, Shape};
 use resvg::tiny_skia::{self, Pixmap};
 use resvg::usvg;
 
-/// Builder for image, refer to [`SvgBuilder`] for more information
+/// [`ImageBuilder`] contains an [`SvgBuilder`] and adds some options \
+/// - fit_height adds a max-height boundary
+/// - fit_width adds a max-width boundary
 pub struct ImageBuilder {
     fit_height: Option<u32>,
     fit_width: Option<u32>,
     svg_builder: SvgBuilder,
 }
 
+/// Error when converting to image
 #[derive(Debug)]
-/// Error when converting to svg
 pub enum ImageError {
     /// Error while writing to file
     IoError(io::Error),
-    /// Error while creating svg
+    /// Error while creating image
     ImageError(String),
     /// Error while convert to bytes
     EncodingError(String),
@@ -134,16 +136,13 @@ impl ImageBuilder {
     // From https://github.com/RazrFalcon/resvg/blob/master/tests/integration/main.rs
     /// Return a pixmap containing the svg for a QRCode
     pub fn to_pixmap(&self, qr: &QRCode) -> Pixmap {
-        let opt = usvg::Options {
-            font_family: "Noto Sans".to_string(),
-            ..usvg::Options::default()
-        };
+        let opt = usvg::Options::default();
 
         // Do not unwrap on the from_data line, because panic will poison GLOBAL_OPT.
         let tree = {
             let svg_data = self.svg_builder.to_str(qr);
             let tree = usvg::Tree::from_data(svg_data.as_bytes(), &opt);
-            tree.unwrap()
+            tree.expect("Failed to parse SVG")
         };
 
         let fit_to = match (self.fit_width, self.fit_height) {
@@ -153,8 +152,11 @@ impl ImageBuilder {
             _ => usvg::FitTo::Original,
         };
 
-        let size = fit_to.fit_to(tree.size.to_screen_size()).unwrap();
-        let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).unwrap();
+        let size = fit_to
+            .fit_to(tree.size.to_screen_size())
+            .unwrap_or(tree.size.to_screen_size());
+        let mut pixmap =
+            tiny_skia::Pixmap::new(size.width(), size.height()).expect("Failed to create pixmap");
         resvg::render(
             &tree,
             fit_to,
@@ -168,11 +170,18 @@ impl ImageBuilder {
 
     /// Saves the image for a QRCode to a file
     pub fn to_file(&self, qr: &QRCode, file: &str) -> Result<(), ImageError> {
+        use io::{Error, ErrorKind};
+
+        self.to_pixmap(qr)
+            .save_png(file)
+            .map_err(|err| ImageError::IoError(Error::new(ErrorKind::Other, err.to_string())))
+    }
+
+    /// Saves the image for a QRCode in a byte buffer
+    pub fn to_bytes(&self, qr: &QRCode) -> Result<Vec<u8>, ImageError> {
         let out = self.to_pixmap(qr);
-
-        out.save_png(file).unwrap();
-
-        Ok(())
+        out.encode_png()
+            .map_err(|err| ImageError::EncodingError(err.to_string()))
     }
 
     /// Saves the image for a QRCode in a byte buffer
